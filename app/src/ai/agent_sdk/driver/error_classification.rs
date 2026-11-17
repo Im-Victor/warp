@@ -363,13 +363,23 @@ pub fn classify_driver_error(error: &AgentDriverError) -> (AgentTaskState, TaskS
                 },
             )
         }
-        AgentDriverError::HarnessSetupFailed { harness, reason } => (
-            AgentTaskState::Failed,
-            TaskStatusUpdate::with_error_code(
-                format!("Harness '{harness}' validation failed: {reason}"),
+        AgentDriverError::HarnessSetupFailed {
+            harness,
+            stage,
+            reason,
+        } => {
+            let mut update = TaskStatusUpdate::with_error_code(
+                format!("Harness '{harness}' setup failed: {reason}"),
                 PlatformErrorCode::EnvironmentSetupFailed,
-            ),
-        ),
+            );
+            if let Some(stage) = stage {
+                let info = update.platform_error.as_mut().expect("platform error");
+                info.metadata
+                    .insert("harness_stage".to_owned(), stage.as_str().to_owned());
+                info.metrics_category = Some(format!("acp_{}_failed", stage.as_str()));
+            }
+            (AgentTaskState::Failed, update)
+        }
         AgentDriverError::HarnessConfigSetupFailed { harness, error } => (
             AgentTaskState::Failed,
             TaskStatusUpdate::with_error_code(
@@ -377,19 +387,25 @@ pub fn classify_driver_error(error: &AgentDriverError) -> (AgentTaskState, TaskS
                 PlatformErrorCode::EnvironmentSetupFailed,
             ),
         ),
-        AgentDriverError::HarnessAuthCheckFailed { harness, .. } => {
+        AgentDriverError::HarnessAuthCheckFailed { harness, detail } => {
+            let detail_separator = match detail.chars().last() {
+                Some('.' | '!' | '?') => " ",
+                _ => ". ",
+            };
             let message = format!(
-                "Harness '{harness}' authentication check failed: login credentials \
-                 are invalid or expired. Verify that the authentication secret \
-                 configured for this harness is correct."
+                "Harness '{harness}' authentication check failed: {detail}{detail_separator}\
+                 Verify that the authentication secret configured for this harness is correct."
             );
-            (
-                AgentTaskState::Failed,
-                TaskStatusUpdate::with_error_code(
-                    message,
-                    PlatformErrorCode::AuthenticationRequired,
-                ),
-            )
+            let mut update = TaskStatusUpdate::with_error_code(
+                message,
+                PlatformErrorCode::AuthenticationRequired,
+            );
+            update
+                .platform_error
+                .as_mut()
+                .expect("platform error")
+                .metrics_category = Some("acp_auth_failed".to_owned());
+            (AgentTaskState::Failed, update)
         }
         AgentDriverError::HarnessRuntimeFailureDetected {
             harness,
@@ -498,7 +514,8 @@ fn task_state_for_platform_error_code(code: PlatformErrorCode) -> AgentTaskState
         | PlatformErrorCode::IntegrationNotConfigured
         | PlatformErrorCode::InvalidRequest
         | PlatformErrorCode::NotAuthorized
-        | PlatformErrorCode::ResourceNotFound => AgentTaskState::Failed,
+        | PlatformErrorCode::ResourceNotFound
+        | PlatformErrorCode::OperationNotSupported => AgentTaskState::Failed,
     }
 }
 

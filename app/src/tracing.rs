@@ -4,6 +4,8 @@ use std::time::Duration;
 use tracing::subscriber;
 
 #[cfg(not(target_family = "wasm"))]
+mod child_process;
+#[cfg(not(target_family = "wasm"))]
 mod cloud_agent_auth;
 #[cfg(not(target_family = "wasm"))]
 mod native;
@@ -23,6 +25,30 @@ pub fn init() -> anyhow::Result<Initialization> {
 }
 
 #[cfg(not(target_family = "wasm"))]
+pub(crate) fn create_child_process_handoff(
+    scope_file: &std::path::Path,
+) -> Option<tempfile::TempPath> {
+    native::child_process_snapshot()?
+        .write(scope_file)
+        .map_err(|_| {
+            log::warn!("Child-process tracing unavailable: could not create credential handoff");
+        })
+        .ok()
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn init_child_process(
+    scope_file: &std::path::Path,
+) -> anyhow::Result<(Initialization, opentelemetry::Context)> {
+    let config =
+        child_process::ChildProcessTracingConfig::consume(scope_file).unwrap_or_else(|_| {
+            log::warn!("Child-process tracing unavailable: invalid credential handoff");
+            None
+        });
+    native::init_child_process(config)
+}
+
+#[cfg(not(target_family = "wasm"))]
 /// Starts cloud-agent trace credential refresh after authenticated application services exist.
 ///
 /// The exporter and dispatch credential are initialized earlier by [`init`]. This later lifecycle
@@ -33,6 +59,15 @@ pub fn start_auth_refresh(
     ctx: &mut warpui::AppContext,
 ) {
     native::start_auth_refresh(client, ctx);
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn assign_run_credentials(
+    runtime_env: &mut std::collections::HashMap<String, String>,
+    client: std::sync::Arc<crate::server::server_api::managed_secrets::AppManagedSecretsClient>,
+    ctx: &mut warpui::AppContext,
+) {
+    native::assign_run_credentials(runtime_env, client, ctx);
 }
 
 fn install_no_subscriber() -> anyhow::Result<()> {

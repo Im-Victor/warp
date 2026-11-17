@@ -22,9 +22,9 @@ use warp_multi_agent_api::response_event::stream_finished::{
 };
 use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 
-use super::RequestInput;
 use super::controller::response_stream::ResponseStreamId;
 use super::persistence::{PersistedAIInput, PersistedAIInputType};
+use super::{RequestInput, hooks};
 use crate::GlobalResourceHandlesProvider;
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::{
@@ -39,6 +39,7 @@ use crate::ai::agent::{
     AIAgentTodoId, CancellationReason, FinishedAIAgentOutput, MessageId, RenderableAIError,
     RequestCost, Suggestions,
 };
+use crate::ai::ambient_agents::AmbientAgentTask;
 use crate::ai::artifacts::Artifact;
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::input_suggestions::HistoryOrder;
@@ -620,7 +621,11 @@ impl BlocklistAIHistoryModel {
                 .conversations_by_id
                 .get(&conversation_id)
                 .and_then(|c| c.parent_conversation_id());
-            if current_parent != Some(parent_conversation_id) {
+            if current_parent != Some(parent_conversation_id)
+                && self
+                    .conversation(&conversation_id)
+                    .is_some_and(AIConversation::is_remote_child)
+            {
                 self.set_parent_for_conversation(conversation_id, parent_conversation_id);
             }
             return conversation_id;
@@ -647,6 +652,31 @@ impl BlocklistAIHistoryModel {
             ctx,
         );
         conversation_id
+    }
+
+    /// Applies a remote child's server task snapshot to its placeholder conversation: the run's
+    /// update time (pill ordering) and its state (pill status badge).
+    pub fn apply_remote_child_task_snapshot(
+        &mut self,
+        terminal_surface_id: EntityId,
+        conversation_id: AIConversationId,
+        task: &AmbientAgentTask,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(conversation) = self
+            .conversations_by_id
+            .get_mut(&conversation_id)
+            .filter(|conversation| conversation.is_remote_child())
+        else {
+            return;
+        };
+        conversation.set_remote_run_updated_at(task.updated_at.with_timezone(&Local));
+        self.update_conversation_status(
+            terminal_surface_id,
+            conversation_id,
+            task.state.conversation_status(),
+            ctx,
+        );
     }
 
     /// Sets the parent conversation ID on a child conversation and updates
@@ -1422,6 +1452,10 @@ impl BlocklistAIHistoryModel {
             new_conversation_id,
             terminal_surface_id,
         });
+
+        if !is_viewing_shared_session && !is_cli_agent_transcript {
+            hooks::session::notify_session_start(new_conversation_id, ctx);
+        }
 
         new_conversation_id
     }
@@ -2983,6 +3017,9 @@ impl BlocklistAIHistoryModel {
             Some(merged_conversation_data),
         )?;
         merged.reassign_exchange_ids();
+        if let Some(updated_at) = placeholder.remote_run_updated_at() {
+            merged.set_remote_run_updated_at(updated_at);
+        }
 
         if let Some(metadata) = cloud_conversation.server_metadata() {
             merged.set_server_metadata(metadata.clone());

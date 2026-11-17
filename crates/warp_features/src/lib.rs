@@ -780,6 +780,9 @@ pub enum FeatureFlag {
     ///   block snapshot from the server.
     OzHandoff,
 
+    /// Restores native-local descendants when a cloud parent resumes after handoff.
+    RestoreLocalSubtree,
+
     /// Enables the upgraded CLI agent session tracking and notifications infrastructure.
     HOANotifications,
 
@@ -960,6 +963,10 @@ pub enum FeatureFlag {
     /// setup or API key required.
     FactoryMcp,
 
+    /// Attaches the Warp-hosted preview URLs MCP server (`/api/v1/mcp/preview-urls`)
+    /// to agent runs, so a cloud run can expose a sandbox port as a preview URL.
+    PreviewUrlsMcp,
+
     /// Enables periodic workspace-handoff checkpoints during a cloud agent run,
     /// rather than only uploading a workspace snapshot once at end-of-run.
     /// Requires `OzHandoff` to also be enabled; a no-op for local runs and when
@@ -994,10 +1001,23 @@ pub enum FeatureFlag {
     /// Warp-managed object storage.
     StoredScreenshots,
 
+    /// Runs user-configured agent hooks at fixed points in Warp's agent loop.
+    AgentHooks,
+
     /// Lets cloud agent environment checkouts build repositories from bare git
     /// mirrors kept in the persistent build cache instead of cloning each one
     /// from the remote. Disabling it restores direct, network-only checkouts.
     GitMirrorCache,
+    AgentPromptSteering,
+
+    /// Resolves skill reference files in a Factory definition's skill folders during cloud runs,
+    /// loading the selected skills from other repositories.
+    FactorySkillReferences,
+    CreditEquivalentBillingUsage,
+
+    /// Refreshes the short-lived proxy credentials of managed MCP servers during an agent run,
+    /// before they expire and on first use after they have expired.
+    ManagedMcpCredentialRefresh,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -1017,10 +1037,7 @@ static FEATURES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Features used in debugging.
 pub const DEBUG_FLAGS: &[FeatureFlag] = &[FeatureFlag::DebugMode, FeatureFlag::RuntimeFeatureFlags];
 /// Features enabled only for the WarpLocal developer build.
-pub const LOCAL_FLAGS: &[FeatureFlag] = &[
-    FeatureFlag::LocalClaudeCodexChildHarnesses,
-    FeatureFlag::AcpHarness,
-];
+pub const LOCAL_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarnesses];
 
 /// Features enabled for the development team.  The expectation is that, over
 /// time, these will move on to PREVIEW_FLAGS before being launched.
@@ -1071,29 +1088,32 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::PromptCacheExpiryWarning,
     FeatureFlag::JupyterNotebookRendering,
     FeatureFlag::MultiLevelOrchestration,
+    FeatureFlag::RestoreLocalSubtree,
     FeatureFlag::McpJsonTreeView,
     FeatureFlag::BoxDrawingGlyphs,
     FeatureFlag::CtrlCCancelsThirdPartyHarness,
     FeatureFlag::WarpingModelName,
-    FeatureFlag::LrcActivitySignal,
     FeatureFlag::StoredScreenshots,
+    FeatureFlag::PreviewUrlsMcp,
     FeatureFlag::GitMirrorCache,
-    FeatureFlag::CloudAgentExecutionConfig,
-    FeatureFlag::FactoryDeferredRepositories,
+    FeatureFlag::AgentPromptSteering,
+    FeatureFlag::ManagedMcpCredentialRefresh,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Warp).
 /// All PREVIEW_FLAGS are also automatically added to dogfood builds (WarpDev).
-pub const PREVIEW_FLAGS: &[FeatureFlag] = &[];
+pub const PREVIEW_FLAGS: &[FeatureFlag] = &[FeatureFlag::LrcActivitySignal];
 
 /// Features enabled for all release builds (i.e.: everything but WarpLocal).
 /// NOTE: if you are promoting a feature from Preview to launch, you'll likely
 /// want to enable the feature by default in app/Cargo.toml, rather than add it to RELEASE_FLAGS.
 pub const RELEASE_FLAGS: &[FeatureFlag] = &[
+    FeatureFlag::CreditEquivalentBillingUsage,
     FeatureFlag::Autoupdate,
     FeatureFlag::Changelog,
     FeatureFlag::CrashReporting,
     FeatureFlag::PeriodicHandoffCheckpoints,
+    FeatureFlag::FactorySkillReferences,
     FeatureFlag::VideoRecording,
     FeatureFlag::WindowsVideoRecording,
     FeatureFlag::ImeMarkedText,

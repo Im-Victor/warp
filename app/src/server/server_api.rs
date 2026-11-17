@@ -10,6 +10,7 @@ pub mod managed_mcp;
 pub mod managed_secrets;
 pub mod object;
 pub(crate) mod presigned_upload;
+pub mod prewarmed_sandbox;
 pub mod referral;
 pub mod team;
 #[cfg(feature = "tui")]
@@ -32,6 +33,7 @@ use factory::FactoryClient;
 use instant::Instant;
 use managed_mcp::ManagedMcpClient;
 use managed_secrets::AppManagedSecretsClient;
+use non_structural_derive::non_structural_derive;
 use object::ObjectClient;
 use parking_lot::Mutex;
 use referral::ReferralsClient;
@@ -436,6 +438,13 @@ register_error!(TranscribeError);
 /// Prefer NOT adding new methods directly on this struct; instead, add to one of the existing
 /// client trait objects, or create your own. This helps keep `ServerApi` from being overloaded
 /// with disparate types of calls, and allows you to mock methods in tests.
+//
+// `Send` and `Sync` are implemented explicitly, rather than left to the compiler's auto-trait
+// rules, to save compile time. rustc does not share auto-trait results between async functions,
+// so each async method that needs `ServerApi: Send` or `ServerApi: Sync` would otherwise re-check
+// every type reachable from these fields, down through the HTTP client internals. The macro still
+// verifies that each field is `Send` and `Sync`.
+#[non_structural_derive(Send, Sync)]
 pub struct ServerApi {
     base_client: Arc<BaseClient>,
     // TODO(jeff): Make `TelemetryApi` another type of client, and move it off `ServerApi`.
@@ -452,6 +461,7 @@ impl ServerApi {
         ctx: &mut ModelContext<ServerApiProvider>,
     ) -> Self {
         let mut client = http_client::Client::new();
+        let mut external_client = http_client::Client::new_external();
         let iap_token_provider = iap_state.map(|state| {
             client.set_iap_token_provider(state.clone());
             state as Arc<dyn http_client::iap::IapTokenProvider>
@@ -459,11 +469,15 @@ impl ServerApi {
         let mut telemetry_api = TelemetryApi::new();
         if ContextFlag::NetworkLogConsole.is_enabled() {
             NetworkLogModel::handle(ctx).update(ctx, |model, model_ctx| {
-                model.install_on_clients([&mut client, &mut telemetry_api.client], model_ctx);
+                model.install_on_clients(
+                    [&mut client, &mut external_client, &mut telemetry_api.client],
+                    model_ctx,
+                );
             });
         }
         Self::new_with_parts(
             Arc::new(client),
+            Arc::new(external_client),
             auth_state,
             event_sender,
             agent_source,
@@ -474,6 +488,7 @@ impl ServerApi {
 
     fn new_with_parts(
         client: Arc<http_client::Client>,
+        external_client: Arc<http_client::Client>,
         auth_state: Arc<AuthState>,
         event_sender: async_channel::Sender<AuthEvent>,
         agent_source: Option<ai::AgentSource>,
@@ -489,6 +504,7 @@ impl ServerApi {
         let authenticated_graphql = AuthenticatedGraphqlConfig::default();
         let base_client = Arc::new(BaseClient::new(
             client,
+            external_client,
             auth_state,
             event_sender,
             agent_source.map(|source| source.as_str().to_string()),
@@ -510,7 +526,15 @@ impl ServerApi {
         let auth_state = Arc::new(AuthState::new_for_test());
         let client = Arc::new(http_client::Client::new_for_test());
 
-        Self::new_with_parts(client, auth_state, tx, None, None, TelemetryApi::new())
+        Self::new_with_parts(
+            client,
+            Arc::new(http_client::Client::new_external_for_test()),
+            auth_state,
+            tx,
+            None,
+            None,
+            TelemetryApi::new(),
+        )
     }
 
     #[cfg(all(test, feature = "skip_login"))]
@@ -524,6 +548,7 @@ impl ServerApi {
         }
         Self::new_with_parts(
             Arc::new(http_client::Client::new_for_test()),
+            Arc::new(http_client::Client::new_external_for_test()),
             auth_state,
             event_sender,
             None,
@@ -1611,6 +1636,14 @@ impl ServerApiProvider {
 
     #[cfg_attr(target_family = "wasm", expect(dead_code))]
     pub fn get_harness_support_client(&self) -> Arc<dyn harness_support::HarnessSupportClient> {
+        self.server_api.clone()
+    }
+
+    /// Returns the standby API client with the app's shared authentication state.
+    #[cfg_attr(target_family = "wasm", expect(dead_code))]
+    pub fn get_prewarmed_sandbox_client(
+        &self,
+    ) -> Arc<dyn prewarmed_sandbox::PrewarmedSandboxClient> {
         self.server_api.clone()
     }
 }
